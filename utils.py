@@ -5,6 +5,7 @@ import re
 import numpy as np
 import requests
 import tensorflow as tf
+from datasets import load_dataset
 from tqdm import tqdm
 
 from encoder import get_encoder
@@ -80,3 +81,11 @@ def load_encoder_hparams_and_params(model_size, models_dir):
     params = load_gpt2_params_from_tf_ckpt(tf_ckpt_path, hparams)
 
     return encoder, hparams, params
+
+def load_yelp_small(encoder, ctx_len=1024):
+    def encode(sample):
+        return {'text': encoder.encode(sample['text'])[:ctx_len], 'label': sample['label']}
+    
+    dataset = load_dataset("alexchen4ai/yelp_review_1000")
+    encoded = dataset.map(encode)
+    return encoded
