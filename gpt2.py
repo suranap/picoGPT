@@ -1,4 +1,6 @@
 import autograd.numpy as np
+from autograd import grad
+from autograd.misc.optimizers import adam
 
 
 def gelu(x):
@@ -94,6 +96,11 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
 
+def cross_entropy_loss(y, y_pred, eps=1e-9) -> float:
+    loss = -np.sum(y * np.log(y_pred + eps))
+    return loss
+
+
 def main(prompt: str = "The brown fox jumps", n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models"):
     from utils import load_encoder_hparams_and_params
 
@@ -106,13 +113,24 @@ def main(prompt: str = "The brown fox jumps", n_tokens_to_generate: int = 40, mo
     # make sure we are not surpassing the max sequence length of our model
     assert len(input_ids) + n_tokens_to_generate < hparams["n_ctx"]
 
-    # generate output ids
-    output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
+    # # generate output ids
+    # output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
+    def objective(params, i) -> float:
+        eps = 1e-9
+        logits = gpt2(input_ids[:-1], **params, n_head=hparams["n_head"])
+        y_pred = np.clip(softmax(logits[-1]), eps, 1 - eps)
+        y = np.zeros_like(y_pred)
+        y[input_ids[-1]] = 1.0  # one-hot target
+        loss = cross_entropy_loss(y, y_pred)
+        return loss
+
+    objective_grad = grad(objective) 
+    optimized_params = adam(objective_grad, params, step_size=0.001, num_iters=1)
 
     # decode the ids back into a string
-    output_text = encoder.decode(output_ids)
-
-    return output_text
+    # output_text = encoder.decode(output_ids)
+    print("Done")
+    # return output_text
 
 
 if __name__ == "__main__":
