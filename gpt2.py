@@ -1,4 +1,6 @@
 import autograd.numpy as np
+from autograd import grad
+from autograd.misc.optimizers import adam
 
 
 def gelu(x):
@@ -94,26 +96,74 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
 
-def main(prompt: str, n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models"):
-    from utils import load_encoder_hparams_and_params
+def cross_entropy_loss(y, y_pred, eps=1e-9) -> float:
+    loss = -np.sum(y * np.log(y_pred + eps))
+    return loss
 
-    # load encoder, hparams, and params from the released open-ai gpt-2 files
-    encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
 
-    # encode the input string using the BPE tokenizer
-    input_ids = encoder.encode(prompt)
-
+def inference(input_ids, params, hparams, n_tokens_to_generate: int):
     # make sure we are not surpassing the max sequence length of our model
     assert len(input_ids) + n_tokens_to_generate < hparams["n_ctx"]
 
     # generate output ids
     output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
 
-    # decode the ids back into a string
-    output_text = encoder.decode(output_ids)
+    return output_ids
 
-    return output_text
 
+def training(params, hparams, encoder, n_tokens_to_generate: int):
+    from utils import load_yelp_small
+    dataset = load_yelp_small(encoder)
+
+    eps = np.finfo(np.float32).eps
+    train, test = dataset["train"], dataset["test"]
+
+    def objective(params, i):
+        # Get the next sample from the dataset
+        x = train[i]['text']
+
+        # forward pass
+        # TODO: How does causal masking work?
+        logits = gpt2(x[:-1], **params, n_head=hparams["n_head"])
+        y_pred = np.clip(softmax(logits[-1]), eps, 1 - eps)
+        # TODO: How to set the y value?
+        y = np.zeros_like(y_pred)
+        y[x[-1]] = 1  # label is the next token in the sequence
+        # compute loss
+        loss = cross_entropy_loss(y, y_pred)
+
+        return loss
+    
+    def callback(params, i, g):
+        print(f"iteration {i}")
+        # if i % 100 == 0:
+        #     print(f"iteration {i}, loss: {objective(params, i)}")
+
+    optimized_params = adam(grad(objective), params, callback=callback, step_size=0.001, num_iters=100)
+    return optimized_params
+
+
+def main(prompt: str = '', n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models",
+         infer: bool = False, train: bool = True):
+    from utils import load_encoder_hparams_and_params
+
+    # load encoder, hparams, and params from the released open-ai gpt-2 files
+    encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
+
+    if infer:
+        # encode the prompt into token ids
+        input_ids = encoder.encode(prompt)
+
+        # generate output text
+        output_ids = inference(input_ids, params, hparams, n_tokens_to_generate)
+        output_text = encoder.decode(output_ids)
+        print(output_text)
+    elif train:
+        optimized_params = training(params, hparams, encoder, n_tokens_to_generate)
+        print("Done training!")
+    else:
+        print("Choose --train or --infer option")
+    
 
 if __name__ == "__main__":
     import fire
