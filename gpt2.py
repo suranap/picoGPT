@@ -2,6 +2,7 @@ import autograd.numpy as np
 from autograd import grad
 from autograd.misc.optimizers import adam
 
+import itertools as it
 
 def gelu(x):
     return 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
@@ -34,7 +35,7 @@ def ffn(x, c_fc, c_proj):  # [n_seq, n_embd] -> [n_seq, n_embd]
 
 
 def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
-    return softmax(q @ k.T / np.sqrt(q.shape[-1]) + mask) @ v
+    return softmax(q @ np.moveaxis(k, -1, -2) / np.sqrt(q.shape[-1]) + mask) @ v
 
 
 def mha(x, c_attn, c_proj, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -48,13 +49,13 @@ def mha(x, c_attn, c_proj, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     qkv_heads = list(map(lambda x: np.split(x, n_head, axis=-1), qkv))  # [3, n_seq, n_embd] -> [3, n_head, n_seq, n_embd/n_head]
 
     # causal mask to hide future inputs from being attended to
-    causal_mask = (1 - np.tri(x.shape[0], dtype=x.dtype)) * -1e10  # [n_seq, n_seq]
+    causal_mask = (1 - np.tri(x.shape[-2], dtype=x.dtype)) * -1e10  # [n_seq, n_seq]
 
     # perform attention over each head
     out_heads = [attention(q, k, v, causal_mask) for q, k, v in zip(*qkv_heads)]  # [3, n_head, n_seq, n_embd/n_head] -> [n_head, n_seq, n_embd/n_head]
 
     # merge heads
-    x = np.hstack(out_heads)  # [n_head, n_seq, n_embd/n_head] -> [n_seq, n_embd]
+    x = np.concatenate(out_heads, axis=-1)  # [n_head, n_seq, n_embd/n_head] -> [n_seq, n_embd]
 
     # out projection
     x = linear(x, **c_proj)  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -74,7 +75,7 @@ def transformer_block(x, mlp, attn, ln_1, ln_2, n_head):  # [n_seq, n_embd] -> [
 
 def gpt2(inputs, wte, wpe, blocks, ln_f, n_head):  # [n_seq] -> [n_seq, n_vocab]
     # token + positional embeddings
-    x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
+    x = wte[inputs] + wpe[range(inputs.shape[-1])]  # [n_seq] -> [n_seq, n_embd]
 
     # forward pass through n_layer transformer blocks
     for block in blocks:
@@ -111,40 +112,39 @@ def inference(input_ids, params, hparams, n_tokens_to_generate: int):
     return output_ids
 
 
-def training(params, hparams, encoder, n_tokens_to_generate: int):
+def training(params, hparams, encoder, batch_size):
     from utils import load_yelp_small
     dataset = load_yelp_small(encoder)
 
     eps = np.finfo(np.float32).eps
     train, test = dataset["train"], dataset["test"]
+    batch_size = 2
 
     def objective(params, i):
         # Get the next sample from the dataset
-        x = train[i]['text']
+        items = slice(i * batch_size, (i + 1) * batch_size)
+        x = np.asarray(list(it.zip_longest(*train[items]['text'], fillvalue=0))).T
 
         # forward pass
-        # TODO: How does causal masking work?
-        logits = gpt2(x[:-1], **params, n_head=hparams["n_head"])
-        y_pred = np.clip(softmax(logits[-1]), eps, 1 - eps)
-        # TODO: How to set the y value?
+        logits = gpt2(x, **params, n_head=hparams["n_head"])
+        y_pred = np.clip(softmax(logits), eps, 1 - eps)
         y = np.zeros_like(y_pred)
-        y[x[-1]] = 1  # label is the next token in the sequence
+        x1 = x[:, :, None]
+        np.put_along_axis(y, x1, 1, axis=-1)
         # compute loss
-        loss = cross_entropy_loss(y, y_pred)
+        loss = cross_entropy_loss(y[..., 1:, :], y_pred[..., :-1, :])
 
         return loss
-    
+
     def callback(params, i, g):
         print(f"iteration {i}")
-        # if i % 100 == 0:
-        #     print(f"iteration {i}, loss: {objective(params, i)}")
 
     optimized_params = adam(grad(objective), params, callback=callback, step_size=0.001, num_iters=100)
     return optimized_params
 
 
 def main(prompt: str = '', n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models",
-         infer: bool = False, train: bool = True):
+         infer: bool = False, train: bool = True, batch_size:int = 1):
     from utils import load_encoder_hparams_and_params
 
     # load encoder, hparams, and params from the released open-ai gpt-2 files
@@ -159,7 +159,7 @@ def main(prompt: str = '', n_tokens_to_generate: int = 40, model_size: str = "12
         output_text = encoder.decode(output_ids)
         print(output_text)
     elif train:
-        optimized_params = training(params, hparams, encoder, n_tokens_to_generate)
+        optimized_params = training(params, hparams, encoder, batch_size)
         print("Done training!")
     else:
         print("Choose --train or --infer option")

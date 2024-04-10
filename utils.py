@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import itertools as it
 
 import numpy as np
 import requests
@@ -84,7 +85,7 @@ def load_encoder_hparams_and_params(model_size, models_dir):
 
 def load_yelp_small(encoder, ctx_len=1024):
     def encode(sample):
-        sample['text'] = encoder.encode(sample['text'])[:ctx_len]
+        sample['text'] = encoder.encode(sample['text'])
         return sample
 
     dataset = load_dataset("alexchen4ai/yelp_review_1000")
