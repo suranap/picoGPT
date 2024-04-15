@@ -1,6 +1,6 @@
-import autograd.numpy as np
-from autograd import grad
-from autograd.misc.optimizers import adam
+import jax.numpy as np
+from jax import grad
+import optax
 
 import itertools as it
 
@@ -75,7 +75,7 @@ def transformer_block(x, mlp, attn, ln_1, ln_2, n_head):  # [n_seq, n_embd] -> [
 
 def gpt2(inputs, wte, wpe, blocks, ln_f, n_head):  # [n_seq] -> [n_seq, n_vocab]
     # token + positional embeddings
-    x = wte[inputs] + wpe[range(inputs.shape[-1])]  # [n_seq] -> [n_seq, n_embd]
+    x = wte[inputs] + wpe[np.array(range(inputs.shape[-1]))]  # [n_seq] -> [n_seq, n_embd]
 
     # forward pass through n_layer transformer blocks
     for block in blocks:
@@ -127,11 +127,10 @@ def training(params, hparams, encoder, batch_size):
 
         # forward pass
         logits = gpt2(x, **params, n_head=hparams["n_head"])
+        # compute loss
         y_pred = np.clip(softmax(logits), eps, 1 - eps)
         y = np.zeros_like(y_pred)
-        x1 = x[:, :, None]
-        np.put_along_axis(y, x1, 1, axis=-1)
-        # compute loss
+        y = y.at[np.arange(x.shape[0])[:, None], np.arange(x.shape[1]), x].set(1.0)
         loss = cross_entropy_loss(y[..., 1:, :], y_pred[..., :-1, :])
 
         return loss
@@ -139,8 +138,15 @@ def training(params, hparams, encoder, batch_size):
     def callback(params, i, g):
         print(f"iteration {i}")
 
-    optimized_params = adam(grad(objective), params, callback=callback, step_size=0.001, num_iters=100)
-    return optimized_params
+    for i in range(10):
+        optimizer = optax.adam(0.001)
+        opt_state = optimizer.init(params)
+        grads = grad(objective)(params, i)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        print(f"iteration {i}")
+
+    return params
 
 
 def main(prompt: str = '', n_tokens_to_generate: int = 40, model_size: str = "124M", models_dir: str = "models",
