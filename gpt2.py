@@ -1,5 +1,5 @@
 import jax.numpy as np
-from jax import grad
+from jax import grad, vmap
 import optax
 
 import itertools as it
@@ -52,7 +52,11 @@ def mha(x, c_attn, c_proj, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     causal_mask = (1 - np.tri(x.shape[-2], dtype=x.dtype)) * -1e10  # [n_seq, n_seq]
 
     # perform attention over each head
-    out_heads = [attention(q, k, v, causal_mask) for q, k, v in zip(*qkv_heads)]  # [3, n_head, n_seq, n_embd/n_head] -> [n_head, n_seq, n_embd/n_head]
+    # out_heads = [attention(q, k, v, causal_mask) for q, k, v in zip(*qkv_heads)]  # [3, n_head, n_seq, n_embd/n_head] -> [n_head, n_seq, n_embd/n_head]
+
+    # Try again with vmap
+    qkv_heads_array = np.array(qkv_heads)
+    out_heads = vmap(attention, in_axes=(0, 0, 0, None))(*qkv_heads_array, causal_mask)
 
     # merge heads
     x = np.concatenate(out_heads, axis=-1)  # [n_head, n_seq, n_embd/n_head] -> [n_seq, n_embd]
@@ -118,7 +122,6 @@ def training(params, hparams, encoder, batch_size):
 
     eps = np.finfo(np.float32).eps
     train, test = dataset["train"], dataset["test"]
-    batch_size = 2
 
     def objective(params, i):
         # Get the next sample from the dataset
